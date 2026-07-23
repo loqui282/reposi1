@@ -86,7 +86,7 @@ app.post("/api/criar-pix", async (req, res) => {
             arrangements: ["PAGBANK"],
           },
         ],
-        notification_urls: [`${cleanBaseUrl}/api/webhook`],
+        notification_urls: ["https://reposi1-production.up.railway.app/api/webhook"],
       },
       {
         headers: {
