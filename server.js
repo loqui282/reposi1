@@ -12,7 +12,6 @@ app.use(express.json());
 
 const {
   PAGBANK_TOKEN,
-  PAGBANK_BASE_URL,
   BASE_URL,
   RESEND_API_KEY,
   EMAIL_FROM,
@@ -20,6 +19,7 @@ const {
   PORT,
 } = process.env;
 
+const PAGBANK_BASE_URL = "https://api.pagseguro.com";
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
@@ -50,11 +50,12 @@ app.post("/api/criar-pix", async (req, res) => {
 
     const referenceId = `pedido_${Date.now()}`;
     const phoneDigits = String(telefone || "").replace(/\D/g, "");
-    const cleanBaseUrl = String(BASE_URL || "").trim().replace(/\/$/, "");
     const cleanToken = String(PAGBANK_TOKEN || "").trim();
+    const cleanBaseUrl = String(PAGBANK_BASE_URL).trim().replace(/\/$/, "");
+    const webhookUrl = `${String(BASE_URL || "").trim().replace(/\/$/, "")}/api/webhook`;
 
     const response = await axios.post(
-      `${PAGBANK_BASE_URL}/orders`,
+      `${cleanBaseUrl}/orders`,
       {
         reference_id: referenceId,
         customer: {
@@ -83,10 +84,9 @@ app.post("/api/criar-pix", async (req, res) => {
           {
             amount: { value: Number(valor) },
             expiration_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-            arrangements: ["PAGBANK"],
           },
         ],
-        notification_urls: ["https://reposi1-production.up.railway.app/api/webhook"],
+        notification_urls: [webhookUrl],
       },
       {
         headers: {
@@ -99,8 +99,8 @@ app.post("/api/criar-pix", async (req, res) => {
 
     const pedido = response.data;
     const qrCode = pedido.qr_codes?.[0];
-    const qrCodeImagem = qrCode?.links?.find((l) => l.media === "image/png" || l.rel === "QRCODE.PNG")?.href;
-    const qrCodeTexto = qrCode?.text || qrCode?.links?.find((l) => l.media === "text/plain" || l.rel === "QRCODE.BASE64")?.href || "";
+    const qrCodeImagem = qrCode?.links?.find((l) => l.media === "image/png")?.href || "";
+    const qrCodeTexto = qrCode?.text || qrCode?.links?.find((l) => l.media === "text/plain")?.href || "";
 
     pedidosPendentes.set(pedido.id, {
       referenceId,
@@ -118,7 +118,9 @@ app.post("/api/criar-pix", async (req, res) => {
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(500).json({ erro: err.response?.data?.error_messages?.[0]?.description || "Erro ao gerar PIX" });
+    res.status(500).json({
+      erro: err.response?.data?.error_messages?.[0]?.description || "Erro ao gerar PIX",
+    });
   }
 });
 
@@ -130,16 +132,20 @@ app.get("/api/status/:orderId", (req, res) => {
 
 app.post("/api/webhook", async (req, res) => {
   try {
-    const orderId = req.body.id || req.body.order_id;
-    const charge = req.body.charges?.[0];
-    const status = charge?.status;
+    console.log("WEBHOOK PGBANK:", JSON.stringify(req.body));
 
-    const pedido = pedidosPendentes.get(orderId);
+    const body = req.body || {};
+    const orderId = body.id || body.order_id || body.order?.id || body.resource?.order_id;
+    const charge = body.charges?.[0] || body.charge || body.payment;
+    const status = charge?.status || body.status;
 
-    if (pedido && status === "PAID") {
-      pedido.status = "pago";
-      pedidosPendentes.set(orderId, pedido);
-      await enviarEmail(pedido);
+    if (orderId) {
+      const pedido = pedidosPendentes.get(orderId);
+      if (pedido && String(status).toUpperCase() === "PAID") {
+        pedido.status = "pago";
+        pedidosPendentes.set(orderId, pedido);
+        await enviarEmail(pedido);
+      }
     }
 
     res.status(200).send("ok");
@@ -151,7 +157,7 @@ app.post("/api/webhook", async (req, res) => {
 
 app.get("/", (req, res) => res.send("Backend PIX rodando."));
 
-const port = process.env.PORT || 3000;
+const port = PORT || 3000;
 app.listen(port, "0.0.0.0", () => {
   console.log(`Servidor rodando na porta ${port}`);
 });
