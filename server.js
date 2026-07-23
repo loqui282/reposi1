@@ -60,7 +60,7 @@ app.post("/api/criar-pix", async (req, res) => {
         customer: {
           name: String(nome).trim(),
           email: String(email).trim(),
-          tax_id: "12345678909",
+          tax_id: "08433466801",
           phones: phoneDigits.length >= 10
             ? [
                 {
