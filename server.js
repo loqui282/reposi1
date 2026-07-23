@@ -149,6 +149,8 @@ app.post("/api/webhook", async (req, res) => {
 
 app.get("/", (req, res) => res.send("Backend PIX rodando."));
 
-app.listen(PORT || 3000, () => {
-  console.log(`Servidor rodando na porta ${PORT || 3000}`);
+const port = process.env.PORT || 3000;
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Servidor rodando na porta ${port}`);
 });
