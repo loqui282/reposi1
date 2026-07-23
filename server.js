@@ -79,12 +79,13 @@ app.post("/api/criar-pix", async (req, res) => {
             unit_amount: Number(valor),
           },
         ],
-        qr_codes: [
-          {
-            amount: { value: Number(valor) },
-            expiration_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-          },
-        ],
+       qr_codes: [
+  {
+    amount: { value: Number(valor) },
+    expiration_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    arrangements: ["PAGBANK"],
+  },
+],
         notification_urls: [`${BASE_URL}/api/webhook`],
       },
       {
