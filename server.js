@@ -21,9 +21,6 @@ const {
 } = process.env;
 
 const resend = new Resend(RESEND_API_KEY);
-
-// Guarda em memoria os dados do cliente enquanto o pagamento nao e confirmado.
-// Para producao real com muitos pedidos, troque isso por um banco de dados.
 const pedidosPendentes = new Map();
 
 async function enviarEmail(pedido) {
@@ -43,7 +40,6 @@ async function enviarEmail(pedido) {
   });
 }
 
-// 1) Rota para o front-end chamar quando o cliente clica em "Pagar com PIX"
 app.post("/api/criar-pix", async (req, res) => {
   try {
     const { nome, email, telefone, valor } = req.body;
@@ -53,21 +49,25 @@ app.post("/api/criar-pix", async (req, res) => {
     }
 
     const referenceId = `pedido_${Date.now()}`;
+    const phoneDigits = String(telefone || "").replace(/\D/g, "");
+    const cleanBaseUrl = String(BASE_URL || "").trim().replace(/\/$/, "");
+    const cleanToken = String(PAGBANK_TOKEN || "").trim();
 
     const response = await axios.post(
       `${PAGBANK_BASE_URL}/orders`,
       {
         reference_id: referenceId,
         customer: {
-          name: nome,
-          email: email,
-          tax_id: "00000000000",
-          phones: telefone
+          name: String(nome).trim(),
+          email: String(email).trim(),
+          tax_id: "12345678909",
+          phones: phoneDigits.length >= 10
             ? [
                 {
                   country: "55",
-                  area: telefone.replace(/\D/g, "").slice(0, 2),
-                  number: telefone.replace(/\D/g, "").slice(2),
+                  area: phoneDigits.slice(0, 2),
+                  number: phoneDigits.slice(2),
+                  type: "MOBILE",
                 },
               ]
             : [],
@@ -79,18 +79,19 @@ app.post("/api/criar-pix", async (req, res) => {
             unit_amount: Number(valor),
           },
         ],
-       qr_codes: [
-  {
-    amount: { value: Number(valor) },
-    expiration_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-    arrangements: ["PAGBANK"],
-  },
-],
-        notification_urls: [`${BASE_URL}/api/webhook`],
+        qr_codes: [
+          {
+            amount: { value: Number(valor) },
+            expiration_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+            arrangements: ["PAGBANK"],
+          },
+        ],
+        notification_urls: [`${cleanBaseUrl}/api/webhook`],
       },
       {
         headers: {
-          Authorization: `Bearer ${PAGBANK_TOKEN}`,
+          Authorization: `Bearer ${cleanToken}`,
+          Accept: "application/json",
           "Content-Type": "application/json",
         },
       }
@@ -98,6 +99,8 @@ app.post("/api/criar-pix", async (req, res) => {
 
     const pedido = response.data;
     const qrCode = pedido.qr_codes?.[0];
+    const qrCodeImagem = qrCode?.links?.find((l) => l.media === "image/png" || l.rel === "QRCODE.PNG")?.href;
+    const qrCodeTexto = qrCode?.text || qrCode?.links?.find((l) => l.media === "text/plain" || l.rel === "QRCODE.BASE64")?.href || "";
 
     pedidosPendentes.set(pedido.id, {
       referenceId,
@@ -110,23 +113,21 @@ app.post("/api/criar-pix", async (req, res) => {
 
     res.json({
       orderId: pedido.id,
-      qrCodeImagem: qrCode?.links?.find((l) => l.rel === "QRCODE.PNG")?.href,
-      qrCodeTexto: qrCode?.text,
+      qrCodeImagem,
+      qrCodeTexto,
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao gerar PIX" });
+    res.status(500).json({ erro: err.response?.data?.error_messages?.[0]?.description || "Erro ao gerar PIX" });
   }
 });
 
-// 2) Rota para o front-end consultar o status
 app.get("/api/status/:orderId", (req, res) => {
   const pedido = pedidosPendentes.get(req.params.orderId);
   if (!pedido) return res.status(404).json({ status: "nao_encontrado" });
   res.json({ status: pedido.status });
 });
 
-// 3) Webhook chamado automaticamente pelo PagBank quando o PIX e pago
 app.post("/api/webhook", async (req, res) => {
   try {
     const orderId = req.body.id || req.body.order_id;
@@ -151,7 +152,6 @@ app.post("/api/webhook", async (req, res) => {
 app.get("/", (req, res) => res.send("Backend PIX rodando."));
 
 const port = process.env.PORT || 3000;
-
 app.listen(port, "0.0.0.0", () => {
   console.log(`Servidor rodando na porta ${port}`);
 });
