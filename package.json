@@ -1,7 +1,7 @@
 {
-  "name": "pix-backend",
+  "name": "pix-appmax-backend",
   "version": "1.0.0",
-  "description": "Backend para gerar PIX QR Code via PagBank, receber webhook de confirmacao e enviar email",
+  "description": "Backend para gerar pagamentos via Pix, cartao de credito e debito usando Appmax, receber webhook de confirmacao e enviar email",
   "main": "server.js",
   "type": "module",
   "scripts": {
