@@ -99,6 +99,7 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
       email: String(email).trim(),
       mobilePhone: phoneDigits,
       cpfCnpj: docDigits,
+      notificationDisabled: true,
     },
     { headers: authHeaders(token) }
   );
