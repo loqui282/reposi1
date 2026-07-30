@@ -11,7 +11,8 @@ app.use(cors());
 app.use(express.json());
 
 const {
-  APPMAX_ACCESS_TOKEN, // <-- cole sua chave da Appmax aqui no .env quando tiver
+  ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
+  ASAAS_ENV, // "sandbox" ou "production"
   BASE_URL,
   RESEND_API_KEY,
   EMAIL_FROM,
@@ -19,7 +20,11 @@ const {
   PORT,
 } = process.env;
 
-const APPMAX_BASE_URL = "https://admin.appmax.com.br/api/v3";
+const ASAAS_BASE_URL =
+  String(ASAAS_ENV || "production").trim().toLowerCase() === "sandbox"
+    ? "https://api-sandbox.asaas.com/v3"
+    : "https://api.asaas.com/v3";
+
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
@@ -42,9 +47,16 @@ async function enviarEmail(pedido) {
 
 function cleanEnv() {
   return {
-    token: String(APPMAX_ACCESS_TOKEN || "").trim(),
-    baseUrl: String(APPMAX_BASE_URL).trim().replace(/\/$/, ""),
+    token: String(ASAAS_ACCESS_TOKEN || "").trim(),
+    baseUrl: String(ASAAS_BASE_URL).trim().replace(/\/$/, ""),
     webhookUrl: `${String(BASE_URL || "").trim().replace(/\/$/, "")}/api/webhook`,
+  };
+}
+
+function authHeaders(token) {
+  return {
+    "Content-Type": "application/json",
+    access_token: token,
   };
 }
 
@@ -53,51 +65,16 @@ async function criarCliente({ nome, email, telefone }) {
   const phoneDigits = String(telefone || "").replace(/\D/g, "");
 
   const response = await axios.post(
-    `${baseUrl}/customer`,
+    `${baseUrl}/customers`,
     {
-      "access-token": token,
-      firstname: String(nome).split(" ")[0] || "Cliente",
-      lastname: String(nome).split(" ").slice(1).join(" ") || "Sobrenome",
+      name: String(nome).trim(),
       email: String(email).trim(),
-      telephone: phoneDigits,
-      postcode: "00000000",
-      address_street: "Nao informado",
-      address_street_number: "0",
-      address_street_district: "Nao informado",
-      address_city: "Nao informado",
-      address_state: "SP",
-      ip: "127.0.0.1",
+      mobilePhone: phoneDigits,
     },
-    { headers: { "Content-Type": "application/json" } }
+    { headers: authHeaders(token) }
   );
 
-  return response.data?.data;
-}
-
-async function criarPedido({ customerId, valor, referenceId }) {
-  const { token, baseUrl } = cleanEnv();
-
-  const response = await axios.post(
-    `${baseUrl}/order`,
-    {
-      "access-token": token,
-      customer_id: customerId,
-      products: [
-        {
-          sku: "acesso-produto",
-          name: "Acesso ao produto",
-          qty: 1,
-          price: Number(valor) / 100,
-        },
-      ],
-      shipping: 0,
-      discount: 0,
-      external_id: referenceId,
-    },
-    { headers: { "Content-Type": "application/json" } }
-  );
-
-  return response.data?.data;
+  return response.data;
 }
 
 // ---------- PIX ----------
@@ -113,23 +90,33 @@ app.post("/api/criar-pix", async (req, res) => {
     const { token, baseUrl } = cleanEnv();
 
     const customer = await criarCliente({ nome, email, telefone });
-    const order = await criarPedido({ customerId: customer.id, valor, referenceId });
 
-    const response = await axios.post(
-      `${baseUrl}/payment/pix`,
+    const cobranca = await axios.post(
+      `${baseUrl}/payments`,
       {
-        "access-token": token,
-        cart: { order_id: order.id },
-        customer: { customer_id: customer.id },
+        customer: customer.id,
+        billingType: "PIX",
+        value: Number(valor) / 100,
+        dueDate: new Date().toISOString().slice(0, 10),
+        externalReference: referenceId,
+        description: "Acesso ao produto",
       },
-      { headers: { "Content-Type": "application/json" } }
+      { headers: authHeaders(token) }
     );
 
-    const pagamento = response.data?.data;
-    const qrCodeImagem = pagamento?.pix_qr_code_base64 || pagamento?.qrcode || "";
-    const qrCodeTexto = pagamento?.pix_emv || pagamento?.pix_code || "";
+    const paymentId = cobranca.data.id;
 
-    pedidosPendentes.set(String(order.id), {
+    const qrResponse = await axios.get(
+      `${baseUrl}/payments/${paymentId}/pixQrCode`,
+      { headers: authHeaders(token) }
+    );
+
+    const qrCodeImagem = qrResponse.data?.encodedImage
+      ? `data:image/png;base64,${qrResponse.data.encodedImage}`
+      : "";
+    const qrCodeTexto = qrResponse.data?.payload || "";
+
+    pedidosPendentes.set(String(paymentId), {
       referenceId,
       nome,
       email,
@@ -139,14 +126,14 @@ app.post("/api/criar-pix", async (req, res) => {
     });
 
     res.json({
-      orderId: order.id,
+      orderId: paymentId,
       qrCodeImagem,
       qrCodeTexto,
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
     res.status(500).json({
-      erro: err.response?.data?.message || err.response?.data?.text || "Erro ao gerar PIX",
+      erro: err.response?.data?.errors?.[0]?.description || "Erro ao gerar PIX",
     });
   }
 });
@@ -164,48 +151,53 @@ app.post("/api/criar-cartao", async (req, res) => {
     const { token, baseUrl } = cleanEnv();
 
     const customer = await criarCliente({ nome, email, telefone });
-    const order = await criarPedido({ customerId: customer.id, valor, referenceId });
 
-    const response = await axios.post(
-      `${baseUrl}/payment/credit-card`,
-      {
-        "access-token": token,
-        cart: { order_id: order.id },
-        customer: { customer_id: customer.id },
-        payment: {
-          CreditCard: {
-            token: cardHash,
-            installments: installments || 1,
-          },
-        },
-      },
-      { headers: { "Content-Type": "application/json" } }
-    );
+    const payload = {
+      customer: customer.id,
+      billingType: "CREDIT_CARD",
+      value: Number(valor) / 100,
+      dueDate: new Date().toISOString().slice(0, 10),
+      externalReference: referenceId,
+      description: "Acesso ao produto",
+      installmentCount: installments && installments > 1 ? installments : undefined,
+      installmentValue:
+        installments && installments > 1
+          ? Number(valor) / 100 / installments
+          : undefined,
+      creditCardToken: cardHash,
+    };
 
-    const pagamento = response.data?.data;
+    const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
+      headers: authHeaders(token),
+    });
 
-    pedidosPendentes.set(String(order.id), {
+    const pagamento = cobranca.data;
+    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+      ? "pago"
+      : "pendente";
+
+    pedidosPendentes.set(String(pagamento.id), {
       referenceId,
       nome,
       email,
       telefone,
       valor: Number(valor),
-      status: pagamento?.status === "approved" ? "pago" : "pendente",
+      status,
     });
 
     res.json({
-      orderId: order.id,
-      status: pagamento?.status || "pendente",
+      orderId: pagamento.id,
+      status: pagamento.status,
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
     res.status(500).json({
-      erro: err.response?.data?.message || err.response?.data?.text || "Erro ao processar cartao",
+      erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar cartao",
     });
   }
 });
 
-// ---------- DEBITO (via cartao com flag) ----------
+// ---------- DEBITO ----------
 app.post("/api/criar-debito", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cardHash } = req.body;
@@ -218,42 +210,43 @@ app.post("/api/criar-debito", async (req, res) => {
     const { token, baseUrl } = cleanEnv();
 
     const customer = await criarCliente({ nome, email, telefone });
-    const order = await criarPedido({ customerId: customer.id, valor, referenceId });
 
-    const response = await axios.post(
-      `${baseUrl}/payment/debit-card`,
-      {
-        "access-token": token,
-        cart: { order_id: order.id },
-        customer: { customer_id: customer.id },
-        payment: {
-          DebitCard: {
-            token: cardHash,
-          },
-        },
-      },
-      { headers: { "Content-Type": "application/json" } }
-    );
+    const payload = {
+      customer: customer.id,
+      billingType: "DEBIT_CARD",
+      value: Number(valor) / 100,
+      dueDate: new Date().toISOString().slice(0, 10),
+      externalReference: referenceId,
+      description: "Acesso ao produto",
+      creditCardToken: cardHash,
+    };
 
-    const pagamento = response.data?.data;
+    const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
+      headers: authHeaders(token),
+    });
 
-    pedidosPendentes.set(String(order.id), {
+    const pagamento = cobranca.data;
+    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+      ? "pago"
+      : "pendente";
+
+    pedidosPendentes.set(String(pagamento.id), {
       referenceId,
       nome,
       email,
       telefone,
       valor: Number(valor),
-      status: pagamento?.status === "approved" ? "pago" : "pendente",
+      status,
     });
 
     res.json({
-      orderId: order.id,
-      status: pagamento?.status || "pendente",
+      orderId: pagamento.id,
+      status: pagamento.status,
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
     res.status(500).json({
-      erro: err.response?.data?.message || err.response?.data?.text || "Erro ao processar debito",
+      erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
     });
   }
 });
@@ -266,17 +259,22 @@ app.get("/api/status/:orderId", (req, res) => {
 
 app.post("/api/webhook", async (req, res) => {
   try {
-    console.log("WEBHOOK APPMAX:", JSON.stringify(req.body));
+    console.log("WEBHOOK ASAAS:", JSON.stringify(req.body));
 
     const body = req.body || {};
-    const orderId = body.data?.order_id || body.order_id || body.data?.id;
-    const status = body.data?.status || body.status;
+    const evento = body.event;
+    const payment = body.payment || {};
+    const paymentId = payment.id;
+    const status = payment.status;
 
-    if (orderId) {
-      const pedido = pedidosPendentes.get(String(orderId));
-      if (pedido && String(status).toLowerCase() === "approved") {
+    if (paymentId) {
+      const pedido = pedidosPendentes.get(String(paymentId));
+      const statusPago = ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
+        ["CONFIRMED", "RECEIVED"].includes(status);
+
+      if (pedido && statusPago && pedido.status !== "pago") {
         pedido.status = "pago";
-        pedidosPendentes.set(String(orderId), pedido);
+        pedidosPendentes.set(String(paymentId), pedido);
         await enviarEmail(pedido);
       }
     }
@@ -288,7 +286,7 @@ app.post("/api/webhook", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Backend Appmax rodando."));
+app.get("/", (req, res) => res.send("Backend Asaas rodando."));
 
 const port = PORT || 3000;
 app.listen(port, "0.0.0.0", () => {
