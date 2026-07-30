@@ -60,6 +60,28 @@ function authHeaders(token) {
   };
 }
 
+// Divide uma string "NUMERO|NOME|MM/AA|CVV" em campos separados
+function parseCardRaw(cardRaw) {
+  const parts = String(cardRaw || "").split("|").map((p) => p.trim());
+  const [numberRaw, holderName, expiry, ccv] = parts;
+  const number = String(numberRaw || "").replace(/\D/g, "");
+  const [expMonth, expYearShort] = String(expiry || "").split("/");
+  const expiryMonth = String(expMonth || "").padStart(2, "0");
+  const expiryYear = expYearShort
+    ? expYearShort.length === 2
+      ? `20${expYearShort}`
+      : expYearShort
+    : "";
+
+  return {
+    holderName: holderName || "",
+    number,
+    expiryMonth,
+    expiryYear,
+    ccv: String(ccv || "").trim(),
+  };
+}
+
 async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   const { token, baseUrl } = cleanEnv();
   const phoneDigits = String(telefone || "").replace(/\D/g, "");
@@ -151,8 +173,11 @@ app.post("/api/criar-cartao", async (req, res) => {
 
     const referenceId = `pedido_${Date.now()}`;
     const { token, baseUrl } = cleanEnv();
+    const phoneDigits = String(telefone || "").replace(/\D/g, "");
+    const docDigits = String(cpfCnpj || "").replace(/\D/g, "");
 
     const customer = await criarCliente({ nome, email, telefone, cpfCnpj });
+    const card = parseCardRaw(cardHash);
 
     const payload = {
       customer: customer.id,
@@ -166,7 +191,21 @@ app.post("/api/criar-cartao", async (req, res) => {
         installments && installments > 1
           ? Number(valor) / 100 / installments
           : undefined,
-      creditCardToken: cardHash,
+      creditCard: {
+        holderName: card.holderName,
+        number: card.number,
+        expiryMonth: card.expiryMonth,
+        expiryYear: card.expiryYear,
+        ccv: card.ccv,
+      },
+      creditCardHolderInfo: {
+        name: String(nome).trim(),
+        email: String(email).trim(),
+        cpfCnpj: docDigits,
+        phone: phoneDigits,
+        postalCode: req.body.postalCode || "01310-000",
+        addressNumber: req.body.addressNumber || "0",
+      },
     };
 
     const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
@@ -210,8 +249,11 @@ app.post("/api/criar-debito", async (req, res) => {
 
     const referenceId = `pedido_${Date.now()}`;
     const { token, baseUrl } = cleanEnv();
+    const phoneDigits = String(telefone || "").replace(/\D/g, "");
+    const docDigits = String(cpfCnpj || "").replace(/\D/g, "");
 
     const customer = await criarCliente({ nome, email, telefone, cpfCnpj });
+    const card = parseCardRaw(cardHash);
 
     const payload = {
       customer: customer.id,
@@ -220,7 +262,21 @@ app.post("/api/criar-debito", async (req, res) => {
       dueDate: new Date().toISOString().slice(0, 10),
       externalReference: referenceId,
       description: "Acesso ao produto",
-      creditCardToken: cardHash,
+      creditCard: {
+        holderName: card.holderName,
+        number: card.number,
+        expiryMonth: card.expiryMonth,
+        expiryYear: card.expiryYear,
+        ccv: card.ccv,
+      },
+      creditCardHolderInfo: {
+        name: String(nome).trim(),
+        email: String(email).trim(),
+        cpfCnpj: docDigits,
+        phone: phoneDigits,
+        postalCode: req.body.postalCode || "01310-000",
+        addressNumber: req.body.addressNumber || "0",
+      },
     };
 
     const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
