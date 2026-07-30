@@ -29,6 +29,10 @@ const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
 async function enviarEmail(pedido) {
+  const produtosHtml = (pedido.produtos && pedido.produtos.length > 0)
+    ? `<ul>${pedido.produtos.map((p) => `<li>${p}</li>`).join("")}</ul>`
+    : "<p>Nenhum produto extra selecionado</p>";
+
   await resend.emails.send({
     from: EMAIL_FROM,
     to: EMAIL_TO,
@@ -36,11 +40,9 @@ async function enviarEmail(pedido) {
     html: `
       <h2>Novo pagamento confirmado</h2>
       <p><b>Nome:</b> ${pedido.nome}</p>
-      <p><b>Email do cliente:</b> ${pedido.email}</p>
       <p><b>Telefone:</b> ${pedido.telefone || "-"}</p>
-      <p><b>Valor:</b> R$ ${(pedido.valor / 100).toFixed(2)}</p>
-      <p><b>Referencia:</b> ${pedido.referenceId}</p>
-      <p>Envie o acesso para o cliente o quanto antes.</p>
+      <p><b>Produtos selecionados:</b></p>
+      ${produtosHtml}
     `,
   });
 }
@@ -104,7 +106,7 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
 // ---------- PIX ----------
 app.post("/api/criar-pix", async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cpfCnpj } = req.body;
+    const { nome, email, telefone, valor, cpfCnpj, produtos } = req.body;
 
     if (!nome || !email || !valor || !cpfCnpj) {
       return res.status(400).json({ erro: "nome, email, valor e cpfCnpj sao obrigatorios" });
@@ -145,6 +147,7 @@ app.post("/api/criar-pix", async (req, res) => {
       nome,
       email,
       telefone,
+      produtos: produtos || [],
       valor: Number(valor),
       status: "pendente",
     });
@@ -165,7 +168,7 @@ app.post("/api/criar-pix", async (req, res) => {
 // ---------- CARTAO DE CREDITO ----------
 app.post("/api/criar-cartao", async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cardHash, installments, cpfCnpj } = req.body;
+    const { nome, email, telefone, valor, cardHash, installments, cpfCnpj, produtos } = req.body;
 
     if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
       return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
@@ -217,14 +220,21 @@ app.post("/api/criar-cartao", async (req, res) => {
       ? "pago"
       : "pendente";
 
-    pedidosPendentes.set(String(pagamento.id), {
+    const pedido = {
       referenceId,
       nome,
       email,
       telefone,
+      produtos: produtos || [],
       valor: Number(valor),
       status,
-    });
+    };
+
+    pedidosPendentes.set(String(pagamento.id), pedido);
+
+    if (status === "pago") {
+      await enviarEmail(pedido);
+    }
 
     res.json({
       orderId: pagamento.id,
@@ -241,7 +251,7 @@ app.post("/api/criar-cartao", async (req, res) => {
 // ---------- DEBITO ----------
 app.post("/api/criar-debito", async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cardHash, cpfCnpj } = req.body;
+    const { nome, email, telefone, valor, cardHash, cpfCnpj, produtos } = req.body;
 
     if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
       return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
@@ -288,14 +298,21 @@ app.post("/api/criar-debito", async (req, res) => {
       ? "pago"
       : "pendente";
 
-    pedidosPendentes.set(String(pagamento.id), {
+    const pedido = {
       referenceId,
       nome,
       email,
       telefone,
+      produtos: produtos || [],
       valor: Number(valor),
       status,
-    });
+    };
+
+    pedidosPendentes.set(String(pagamento.id), pedido);
+
+    if (status === "pago") {
+      await enviarEmail(pedido);
+    }
 
     res.json({
       orderId: pagamento.id,
