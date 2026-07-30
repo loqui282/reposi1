@@ -28,10 +28,13 @@ const ASAAS_BASE_URL =
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
+const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
+
 async function enviarEmail(pedido) {
-  const produtosHtml = (pedido.produtos && pedido.produtos.length > 0)
-    ? `<ul>${pedido.produtos.map((p) => `<li>${p}</li>`).join("")}</ul>`
-    : "<p>Nenhum produto extra selecionado</p>";
+  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
+  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
+
+  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
 
   await resend.emails.send({
     from: EMAIL_FROM,
