@@ -60,9 +60,10 @@ function authHeaders(token) {
   };
 }
 
-async function criarCliente({ nome, email, telefone }) {
+async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   const { token, baseUrl } = cleanEnv();
   const phoneDigits = String(telefone || "").replace(/\D/g, "");
+  const docDigits = String(cpfCnpj || "").replace(/\D/g, "");
 
   const response = await axios.post(
     `${baseUrl}/customers`,
@@ -70,6 +71,7 @@ async function criarCliente({ nome, email, telefone }) {
       name: String(nome).trim(),
       email: String(email).trim(),
       mobilePhone: phoneDigits,
+      cpfCnpj: docDigits,
     },
     { headers: authHeaders(token) }
   );
@@ -80,16 +82,16 @@ async function criarCliente({ nome, email, telefone }) {
 // ---------- PIX ----------
 app.post("/api/criar-pix", async (req, res) => {
   try {
-    const { nome, email, telefone, valor } = req.body;
+    const { nome, email, telefone, valor, cpfCnpj } = req.body;
 
-    if (!nome || !email || !valor) {
-      return res.status(400).json({ erro: "nome, email e valor sao obrigatorios" });
+    if (!nome || !email || !valor || !cpfCnpj) {
+      return res.status(400).json({ erro: "nome, email, valor e cpfCnpj sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
     const { token, baseUrl } = cleanEnv();
 
-    const customer = await criarCliente({ nome, email, telefone });
+    const customer = await criarCliente({ nome, email, telefone, cpfCnpj });
 
     const cobranca = await axios.post(
       `${baseUrl}/payments`,
@@ -141,16 +143,16 @@ app.post("/api/criar-pix", async (req, res) => {
 // ---------- CARTAO DE CREDITO ----------
 app.post("/api/criar-cartao", async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cardHash, installments } = req.body;
+    const { nome, email, telefone, valor, cardHash, installments, cpfCnpj } = req.body;
 
-    if (!nome || !email || !valor || !cardHash) {
-      return res.status(400).json({ erro: "nome, email, valor e cardHash sao obrigatorios" });
+    if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
+      return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
     const { token, baseUrl } = cleanEnv();
 
-    const customer = await criarCliente({ nome, email, telefone });
+    const customer = await criarCliente({ nome, email, telefone, cpfCnpj });
 
     const payload = {
       customer: customer.id,
@@ -200,16 +202,16 @@ app.post("/api/criar-cartao", async (req, res) => {
 // ---------- DEBITO ----------
 app.post("/api/criar-debito", async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cardHash } = req.body;
+    const { nome, email, telefone, valor, cardHash, cpfCnpj } = req.body;
 
-    if (!nome || !email || !valor || !cardHash) {
-      return res.status(400).json({ erro: "nome, email, valor e cardHash sao obrigatorios" });
+    if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
+      return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
     const { token, baseUrl } = cleanEnv();
 
-    const customer = await criarCliente({ nome, email, telefone });
+    const customer = await criarCliente({ nome, email, telefone, cpfCnpj });
 
     const payload = {
       customer: customer.id,
