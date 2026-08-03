@@ -2,18 +2,22 @@ import express from "express";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { Resend } from "resend";
 
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(helmet());
 app.use(express.json());
 
 const {
   ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
   ASAAS_ENV, // "sandbox" ou "production"
+  ASAAS_WEBHOOK_TOKEN, // <-- token gerado no painel Asaas em Integrações > Webhooks
   BASE_URL,
+  FRONTEND_ORIGIN, // <-- URL do seu site na Netlify, ex: https://seusite.netlify.app
   RESEND_API_KEY,
   EMAIL_FROM,
   EMAIL_TO,
@@ -25,10 +29,41 @@ const ASAAS_BASE_URL =
     ? "https://api-sandbox.asaas.com/v3"
     : "https://api.asaas.com/v3";
 
+app.use(
+  cors({
+    origin: FRONTEND_ORIGIN ? FRONTEND_ORIGIN.split(",").map((o) => o.trim()) : false,
+    methods: ["GET", "POST"],
+  })
+);
+
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
 const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
+
+// ---------- CATÁLOGO DE PREÇOS NO SERVIDOR (evita manipulação de valor) ----------
+// IMPORTANTE: os IDs e valores (em centavos) precisam ser IDÊNTICOS ao data/offers.ts do frontend.
+// Ajuste esta lista com os IDs reais das suas ofertas antes de publicar.
+const CATALOGO_PRECOS = {
+  netflix: 1280, // NETFLIX_ID -> preço em centavos (exemplo: R$ 12,80)
+  // adicione aqui os demais IDs de offers.ts, ex:
+  // primevideo: 990,
+  // disneyplus: 990,
+};
+
+function calcularValorServidor(produtosIds) {
+  if (!Array.isArray(produtosIds) || produtosIds.length === 0) return 0;
+  return produtosIds.reduce((soma, id) => soma + (CATALOGO_PRECOS[id] || 0), 0);
+}
+
+// ---------- RATE LIMIT NAS ROTAS DE PAGAMENTO ----------
+const pagamentoLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { erro: "Muitas tentativas. Aguarde alguns minutos e tente novamente." },
+});
 
 async function enviarEmail(pedido) {
   const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
@@ -87,6 +122,17 @@ function parseCardRaw(cardRaw) {
   };
 }
 
+// Loga apenas o essencial do erro, sem expor dados de cartão retornados pela Asaas
+function logErroSeguro(err) {
+  const data = err.response?.data;
+  if (data) {
+    const { creditCard, creditCardHolderInfo, ...seguro } = data;
+    console.error("Erro Asaas:", JSON.stringify(seguro));
+  } else {
+    console.error(err.message);
+  }
+}
+
 async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   const { token, baseUrl } = cleanEnv();
   const phoneDigits = String(telefone || "").replace(/\D/g, "");
@@ -108,12 +154,14 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
 }
 
 // ---------- PIX ----------
-app.post("/api/criar-pix", async (req, res) => {
+app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cpfCnpj, produtos } = req.body;
+    const { nome, email, telefone, cpfCnpj, produtosIds } = req.body;
 
-    if (!nome || !email || !valor || !cpfCnpj) {
-      return res.status(400).json({ erro: "nome, email, valor e cpfCnpj sao obrigatorios" });
+    const valorReal = calcularValorServidor(produtosIds);
+
+    if (!nome || !email || !cpfCnpj || !valorReal) {
+      return res.status(400).json({ erro: "nome, email, cpfCnpj e produtosIds validos sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
@@ -126,7 +174,7 @@ app.post("/api/criar-pix", async (req, res) => {
       {
         customer: customer.id,
         billingType: "PIX",
-        value: Number(valor) / 100,
+        value: valorReal / 100,
         dueDate: new Date().toISOString().slice(0, 10),
         externalReference: referenceId,
         description: "Acesso ao produto",
@@ -151,8 +199,8 @@ app.post("/api/criar-pix", async (req, res) => {
       nome,
       email,
       telefone,
-      produtos: produtos || [],
-      valor: Number(valor),
+      produtos: req.body.produtos || [],
+      valor: valorReal,
       status: "pendente",
     });
 
@@ -162,7 +210,7 @@ app.post("/api/criar-pix", async (req, res) => {
       qrCodeTexto,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    logErroSeguro(err);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao gerar PIX",
     });
@@ -170,12 +218,14 @@ app.post("/api/criar-pix", async (req, res) => {
 });
 
 // ---------- CARTAO DE CREDITO ----------
-app.post("/api/criar-cartao", async (req, res) => {
+app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cardHash, installments, cpfCnpj, produtos } = req.body;
+    const { nome, email, telefone, cardHash, installments, cpfCnpj, produtosIds } = req.body;
 
-    if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
-      return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
+    const valorReal = calcularValorServidor(produtosIds);
+
+    if (!nome || !email || !cardHash || !cpfCnpj || !valorReal) {
+      return res.status(400).json({ erro: "nome, email, cardHash, cpfCnpj e produtosIds validos sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
@@ -189,14 +239,14 @@ app.post("/api/criar-cartao", async (req, res) => {
     const payload = {
       customer: customer.id,
       billingType: "CREDIT_CARD",
-      value: Number(valor) / 100,
+      value: valorReal / 100,
       dueDate: new Date().toISOString().slice(0, 10),
       externalReference: referenceId,
       description: "Acesso ao produto",
       installmentCount: installments && installments > 1 ? installments : undefined,
       installmentValue:
         installments && installments > 1
-          ? Number(valor) / 100 / installments
+          ? valorReal / 100 / installments
           : undefined,
       creditCard: {
         holderName: card.holderName,
@@ -229,8 +279,8 @@ app.post("/api/criar-cartao", async (req, res) => {
       nome,
       email,
       telefone,
-      produtos: produtos || [],
-      valor: Number(valor),
+      produtos: req.body.produtos || [],
+      valor: valorReal,
       status,
     };
 
@@ -245,7 +295,7 @@ app.post("/api/criar-cartao", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    logErroSeguro(err);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar cartao",
     });
@@ -253,12 +303,14 @@ app.post("/api/criar-cartao", async (req, res) => {
 });
 
 // ---------- DEBITO ----------
-app.post("/api/criar-debito", async (req, res) => {
+app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
   try {
-    const { nome, email, telefone, valor, cardHash, cpfCnpj, produtos } = req.body;
+    const { nome, email, telefone, cardHash, cpfCnpj, produtosIds } = req.body;
 
-    if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
-      return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
+    const valorReal = calcularValorServidor(produtosIds);
+
+    if (!nome || !email || !cardHash || !cpfCnpj || !valorReal) {
+      return res.status(400).json({ erro: "nome, email, cardHash, cpfCnpj e produtosIds validos sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
@@ -272,7 +324,7 @@ app.post("/api/criar-debito", async (req, res) => {
     const payload = {
       customer: customer.id,
       billingType: "DEBIT_CARD",
-      value: Number(valor) / 100,
+      value: valorReal / 100,
       dueDate: new Date().toISOString().slice(0, 10),
       externalReference: referenceId,
       description: "Acesso ao produto",
@@ -307,8 +359,8 @@ app.post("/api/criar-debito", async (req, res) => {
       nome,
       email,
       telefone,
-      produtos: produtos || [],
-      valor: Number(valor),
+      produtos: req.body.produtos || [],
+      valor: valorReal,
       status,
     };
 
@@ -323,7 +375,7 @@ app.post("/api/criar-debito", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    logErroSeguro(err);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
     });
@@ -338,6 +390,12 @@ app.get("/api/status/:orderId", (req, res) => {
 
 app.post("/api/webhook", async (req, res) => {
   try {
+    // Valida se a requisição realmente veio da Asaas (evita marcar pedidos falsos como pagos)
+    if (ASAAS_WEBHOOK_TOKEN && req.headers["asaas-access-token"] !== ASAAS_WEBHOOK_TOKEN) {
+      console.warn("Webhook recebido com token invalido");
+      return res.status(401).send("token invalido");
+    }
+
     console.log("WEBHOOK ASAAS:", JSON.stringify(req.body));
 
     const body = req.body || {};
@@ -360,7 +418,7 @@ app.post("/api/webhook", async (req, res) => {
 
     res.status(200).send("ok");
   } catch (err) {
-    console.error(err);
+    console.error(err.message);
     res.status(200).send("ok");
   }
 });
