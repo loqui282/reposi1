@@ -13,11 +13,11 @@ app.use(helmet());
 app.use(express.json());
 
 const {
-  ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
-  ASAAS_ENV, // "sandbox" ou "production"
-  ASAAS_WEBHOOK_TOKEN, // <-- token gerado no painel Asaas em Integrações > Webhooks
+  ASAAS_ACCESS_TOKEN, 
+  ASAAS_ENV, 
+  ASAAS_WEBHOOK_TOKEN, 
   BASE_URL,
-  FRONTEND_ORIGIN, // <-- URL do seu site na Netlify, ex: https://seusite.netlify.app
+  FRONTEND_ORIGIN, 
   RESEND_API_KEY,
   EMAIL_FROM,
   EMAIL_TO,
@@ -41,14 +41,9 @@ const pedidosPendentes = new Map();
 
 const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
 
-// ---------- CATÁLOGO DE PREÇOS NO SERVIDOR (evita manipulação de valor) ----------
-// IMPORTANTE: os IDs e valores (em centavos) precisam ser IDÊNTICOS ao data/offers.ts do frontend.
-// Ajuste esta lista com os IDs reais das suas ofertas antes de publicar.
+
 const CATALOGO_PRECOS = {
-  netflix: 1280, // NETFLIX_ID -> preço em centavos (exemplo: R$ 12,80)
-  // adicione aqui os demais IDs de offers.ts, ex:
-  // primevideo: 990,
-  // disneyplus: 990,
+  netflix: 1280, 
 };
 
 function calcularValorServidor(produtosIds) {
@@ -56,7 +51,7 @@ function calcularValorServidor(produtosIds) {
   return produtosIds.reduce((soma, id) => soma + (CATALOGO_PRECOS[id] || 0), 0);
 }
 
-// ---------- RATE LIMIT NAS ROTAS DE PAGAMENTO ----------
+
 const pagamentoLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -100,7 +95,7 @@ function authHeaders(token) {
   };
 }
 
-// Divide uma string "NUMERO|NOME|MM/AA|CVV" em campos separados
+
 function parseCardRaw(cardRaw) {
   const parts = String(cardRaw || "").split("|").map((p) => p.trim());
   const [numberRaw, holderName, expiry, ccv] = parts;
@@ -122,7 +117,7 @@ function parseCardRaw(cardRaw) {
   };
 }
 
-// Loga apenas o essencial do erro, sem expor dados de cartão retornados pela Asaas
+
 function logErroSeguro(err) {
   const data = err.response?.data;
   if (data) {
@@ -153,7 +148,7 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   return response.data;
 }
 
-// ---------- PIX ----------
+
 app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
   try {
     const { nome, email, telefone, cpfCnpj, produtosIds } = req.body;
@@ -217,7 +212,7 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
   }
 });
 
-// ---------- CARTAO DE CREDITO ----------
+
 app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
   try {
     const { nome, email, telefone, cardHash, installments, cpfCnpj, produtosIds } = req.body;
@@ -302,7 +297,7 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
   }
 });
 
-// ---------- DEBITO ----------
+
 app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
   try {
     const { nome, email, telefone, cardHash, cpfCnpj, produtosIds } = req.body;
