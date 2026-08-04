@@ -11,8 +11,8 @@ app.use(cors());
 app.use(express.json());
 
 const {
-  ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
-  ASAAS_ENV, // "sandbox" ou "production"
+  ASAAS_ACCESS_TOKEN,
+  ASAAS_ENV,
   BASE_URL,
   RESEND_API_KEY,
   EMAIL_FROM,
@@ -27,8 +27,6 @@ const ASAAS_BASE_URL =
 
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
-
-const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
 
 function normalizeQty(qty) {
   const n = Number(qty);
@@ -53,18 +51,14 @@ function formatProductItem(p) {
 
 function buildProductsList(produtos) {
   if (!Array.isArray(produtos)) return [];
-
-  return produtos
-    .map(formatProductItem)
-    .filter(Boolean);
+  return produtos.map(formatProductItem).filter(Boolean);
 }
 
 async function enviarEmail(pedido) {
   const listaProdutos = buildProductsList(pedido.produtos);
-
-  const produtosHtml = `<ul>${listaProdutos
-    .map((p) => `<li>${p.name} x${p.quantity}</li>`)
-    .join("")}</ul>`;
+  const produtosHtml = listaProdutos.length
+    ? `<ul>${listaProdutos.map((p) => `<li>${p.name} x${p.quantity}</li>`).join("")}</ul>`
+    : "<p>-</p>";
 
   await resend.emails.send({
     from: EMAIL_FROM,
@@ -81,9 +75,10 @@ async function enviarEmail(pedido) {
 }
 
 function cleanEnv() {
+  const baseUrl = String(ASAAS_BASE_URL).trim().replace(/\/$/, "");
   return {
     token: String(ASAAS_ACCESS_TOKEN || "").trim(),
-    baseUrl: String(ASAAS_BASE_URL).trim().replace(/\/$/, ""),
+    baseUrl,
     webhookUrl: `${String(BASE_URL || "").trim().replace(/\/$/, "")}/api/webhook`,
   };
 }
@@ -95,10 +90,11 @@ function authHeaders(token) {
   };
 }
 
-// Divide uma string "NUMERO|NOME|MM/AA|CVV" em campos separados
 function parseCardRaw(cardRaw) {
-  const parts = String(cardRaw || "").split("|").map((p) => p.trim());
+  const cleaned = String(cardRaw || "").replace(/^RAW:/, "");
+  const parts = cleaned.split("|").map((p) => p.trim());
   const [numberRaw, holderName, expiry, ccv] = parts;
+
   const number = String(numberRaw || "").replace(/\D/g, "");
   const [expMonth, expYearShort] = String(expiry || "").split("/");
   const expiryMonth = String(expMonth || "").padStart(2, "0");
@@ -225,9 +221,7 @@ app.post("/api/criar-cartao", async (req, res) => {
       description: "Acesso ao produto",
       installmentCount: installments && installments > 1 ? installments : undefined,
       installmentValue:
-        installments && installments > 1
-          ? Number(valor) / 100 / installments
-          : undefined,
+        installments && installments > 1 ? Number(valor) / 100 / installments : undefined,
       creditCard: {
         holderName: card.holderName,
         number: card.number,
@@ -244,6 +238,8 @@ app.post("/api/criar-cartao", async (req, res) => {
         addressNumber: req.body.addressNumber || "0",
       },
     };
+
+    console.log("PAYLOAD CARTAO:", JSON.stringify(payload, null, 2));
 
     const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
       headers: authHeaders(token),
@@ -276,7 +272,7 @@ app.post("/api/criar-cartao", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("ERRO ASAAS COMPLETO:", err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar cartao",
     });
@@ -324,6 +320,8 @@ app.post("/api/criar-debito", async (req, res) => {
       },
     };
 
+    console.log("PAYLOAD DEBITO:", JSON.stringify(payload, null, 2));
+
     const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
       headers: authHeaders(token),
     });
@@ -355,7 +353,7 @@ app.post("/api/criar-debito", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("ERRO ASAAS COMPLETO:", err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
     });
