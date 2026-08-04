@@ -9,15 +9,16 @@ import { Resend } from "resend";
 dotenv.config();
 
 const app = express();
+
 app.use(helmet());
 app.use(express.json());
 
 const {
-  ASAAS_ACCESS_TOKEN, 
-  ASAAS_ENV, 
-  ASAAS_WEBHOOK_TOKEN, 
+  ASAAS_ACCESS_TOKEN,
+  ASAAS_ENV,
+  ASAAS_WEBHOOK_TOKEN,
   BASE_URL,
-  FRONTEND_ORIGIN, 
+  FRONTEND_ORIGIN,
   RESEND_API_KEY,
   EMAIL_FROM,
   EMAIL_TO,
@@ -29,9 +30,13 @@ const ASAAS_BASE_URL =
     ? "https://api-sandbox.asaas.com/v3"
     : "https://api.asaas.com/v3";
 
+const allowedOrigins = FRONTEND_ORIGIN
+  ? FRONTEND_ORIGIN.split(",").map((o) => o.trim()).filter(Boolean)
+  : [];
+
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN ? FRONTEND_ORIGIN.split(",").map((o) => o.trim()) : false,
+    origin: allowedOrigins.length ? allowedOrigins : false,
     methods: ["GET", "POST"],
   })
 );
@@ -41,16 +46,15 @@ const pedidosPendentes = new Map();
 
 const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
 
-
+// Ajuste aqui se mudar o id do produto no frontend
 const CATALOGO_PRECOS = {
-  netflix: 1280, 
+  netflix: 1280,
 };
 
 function calcularValorServidor(produtosIds) {
   if (!Array.isArray(produtosIds) || produtosIds.length === 0) return 0;
   return produtosIds.reduce((soma, id) => soma + (CATALOGO_PRECOS[id] || 0), 0);
 }
-
 
 const pagamentoLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -59,26 +63,6 @@ const pagamentoLimiter = rateLimit({
   legacyHeaders: false,
   message: { erro: "Muitas tentativas. Aguarde alguns minutos e tente novamente." },
 });
-
-async function enviarEmail(pedido) {
-  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
-  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
-
-  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
-
-  await resend.emails.send({
-    from: EMAIL_FROM,
-    to: EMAIL_TO,
-    subject: `Pagamento confirmado - Pedido ${pedido.referenceId}`,
-    html: `
-      <h2>Novo pagamento confirmado</h2>
-      <p><b>Nome:</b> ${pedido.nome}</p>
-      <p><b>Telefone:</b> ${pedido.telefone || "-"}</p>
-      <p><b>Produtos selecionados:</b></p>
-      ${produtosHtml}
-    `,
-  });
-}
 
 function cleanEnv() {
   return {
@@ -94,7 +78,6 @@ function authHeaders(token) {
     access_token: token,
   };
 }
-
 
 function parseCardRaw(cardRaw) {
   const parts = String(cardRaw || "").split("|").map((p) => p.trim());
@@ -117,7 +100,6 @@ function parseCardRaw(cardRaw) {
   };
 }
 
-
 function logErroSeguro(err) {
   const data = err.response?.data;
   if (data) {
@@ -126,6 +108,25 @@ function logErroSeguro(err) {
   } else {
     console.error(err.message);
   }
+}
+
+async function enviarEmail(pedido) {
+  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
+  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
+  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+
+  await resend.emails.send({
+    from: EMAIL_FROM,
+    to: EMAIL_TO,
+    subject: `Pagamento confirmado - Pedido ${pedido.referenceId}`,
+    html: `
+      <h2>Novo pagamento confirmado</h2>
+      <p><b>Nome:</b> ${pedido.nome}</p>
+      <p><b>Telefone:</b> ${pedido.telefone || "-"}</p>
+      <p><b>Produtos selecionados:</b></p>
+      ${produtosHtml}
+    `,
+  });
 }
 
 async function criarCliente({ nome, email, telefone, cpfCnpj }) {
@@ -147,7 +148,6 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
 
   return response.data;
 }
-
 
 app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
   try {
@@ -179,10 +179,9 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
 
     const paymentId = cobranca.data.id;
 
-    const qrResponse = await axios.get(
-      `${baseUrl}/payments/${paymentId}/pixQrCode`,
-      { headers: authHeaders(token) }
-    );
+    const qrResponse = await axios.get(`${baseUrl}/payments/${paymentId}/pixQrCode`, {
+      headers: authHeaders(token),
+    });
 
     const qrCodeImagem = qrResponse.data?.encodedImage
       ? `data:image/png;base64,${qrResponse.data.encodedImage}`
@@ -212,7 +211,6 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
   }
 });
 
-
 app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
   try {
     const { nome, email, telefone, cardHash, installments, cpfCnpj, produtosIds } = req.body;
@@ -239,10 +237,7 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
       externalReference: referenceId,
       description: "Acesso ao produto",
       installmentCount: installments && installments > 1 ? installments : undefined,
-      installmentValue:
-        installments && installments > 1
-          ? valorReal / 100 / installments
-          : undefined,
+      installmentValue: installments && installments > 1 ? valorReal / 100 / installments : undefined,
       creditCard: {
         holderName: card.holderName,
         number: card.number,
@@ -265,9 +260,10 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
     });
 
     const pagamento = cobranca.data;
-    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-      ? "pago"
-      : "pendente";
+    const status =
+      pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+        ? "pago"
+        : "pendente";
 
     const pedido = {
       referenceId,
@@ -296,7 +292,6 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
     });
   }
 });
-
 
 app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
   try {
@@ -335,92 +330,4 @@ app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
         email: String(email).trim(),
         cpfCnpj: docDigits,
         phone: phoneDigits,
-        postalCode: req.body.postalCode || "01310-000",
-        addressNumber: req.body.addressNumber || "0",
-      },
-    };
-
-    const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
-      headers: authHeaders(token),
-    });
-
-    const pagamento = cobranca.data;
-    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-      ? "pago"
-      : "pendente";
-
-    const pedido = {
-      referenceId,
-      nome,
-      email,
-      telefone,
-      produtos: req.body.produtos || [],
-      valor: valorReal,
-      status,
-    };
-
-    pedidosPendentes.set(String(pagamento.id), pedido);
-
-    if (status === "pago") {
-      await enviarEmail(pedido);
-    }
-
-    res.json({
-      orderId: pagamento.id,
-      status: pagamento.status,
-    });
-  } catch (err) {
-    logErroSeguro(err);
-    res.status(500).json({
-      erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
-    });
-  }
-});
-
-app.get("/api/status/:orderId", (req, res) => {
-  const pedido = pedidosPendentes.get(String(req.params.orderId));
-  if (!pedido) return res.status(404).json({ status: "nao_encontrado" });
-  res.json({ status: pedido.status });
-});
-
-app.post("/api/webhook", async (req, res) => {
-  try {
-    // Valida se a requisição realmente veio da Asaas (evita marcar pedidos falsos como pagos)
-    if (ASAAS_WEBHOOK_TOKEN && req.headers["asaas-access-token"] !== ASAAS_WEBHOOK_TOKEN) {
-      console.warn("Webhook recebido com token invalido");
-      return res.status(401).send("token invalido");
-    }
-
-    console.log("WEBHOOK ASAAS:", JSON.stringify(req.body));
-
-    const body = req.body || {};
-    const evento = body.event;
-    const payment = body.payment || {};
-    const paymentId = payment.id;
-    const status = payment.status;
-
-    if (paymentId) {
-      const pedido = pedidosPendentes.get(String(paymentId));
-      const statusPago = ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
-        ["CONFIRMED", "RECEIVED"].includes(status);
-
-      if (pedido && statusPago && pedido.status !== "pago") {
-        pedido.status = "pago";
-        pedidosPendentes.set(String(paymentId), pedido);
-        await enviarEmail(pedido);
-      }
-    }
-
-    res.status(200).send("ok");
-  } catch (err) {
-    console.error(err.message);
-    res.status(200).send("ok");
-  }
-});
-
-app.get("/", (req, res) => res.send("Backend Asaas rodando."));
-
-const port = PORT || 3000;
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Servidor rodando na porta ${port}`);
-});
+        postalCode: req.body.postalCode ||
