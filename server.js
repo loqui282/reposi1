@@ -11,8 +11,8 @@ app.use(cors());
 app.use(express.json());
 
 const {
-  ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
-  ASAAS_ENV, // "sandbox" ou "production"
+  ASAAS_ACCESS_TOKEN,
+  ASAAS_ENV,
   BASE_URL,
   RESEND_API_KEY,
   EMAIL_FROM,
@@ -28,13 +28,32 @@ const ASAAS_BASE_URL =
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
-const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
+function normalizeQty(qty) {
+  const n = Number(qty);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function formatProductItem(p) {
+  if (!p) return null;
+  const name = String(p.name || p.title || p.productName || "").trim();
+  if (!name) return null;
+  const quantity = normalizeQty(p.quantity);
+  return `${name} x${quantity}`;
+}
+
+function buildProductsList(produtos) {
+  if (!Array.isArray(produtos)) return [];
+  return produtos
+    .map(formatProductItem)
+    .filter(Boolean);
+}
 
 async function enviarEmail(pedido) {
-  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
-  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
+  const listaProdutos = buildProductsList(pedido.produtos);
 
-  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+  const produtosHtml = `<ul>${listaProdutos
+    .map((p) => `<li>${p}</li>`)
+    .join("")}</ul>`;
 
   await resend.emails.send({
     from: EMAIL_FROM,
@@ -65,7 +84,6 @@ function authHeaders(token) {
   };
 }
 
-// Divide uma string "NUMERO|NOME|MM/AA|CVV" em campos separados
 function parseCardRaw(cardRaw) {
   const parts = String(cardRaw || "").split("|").map((p) => p.trim());
   const [numberRaw, holderName, expiry, ccv] = parts;
@@ -85,6 +103,16 @@ function parseCardRaw(cardRaw) {
     expiryYear,
     ccv: String(ccv || "").trim(),
   };
+}
+
+function logErroSeguro(err) {
+  const data = err.response?.data;
+  if (data) {
+    const { creditCard, creditCardHolderInfo, ...seguro } = data;
+    console.error("Erro Asaas:", JSON.stringify(seguro));
+  } else {
+    console.error(err.message);
+  }
 }
 
 async function criarCliente({ nome, email, telefone, cpfCnpj }) {
@@ -151,7 +179,7 @@ app.post("/api/criar-pix", async (req, res) => {
       nome,
       email,
       telefone,
-      produtos: produtos || [],
+      produtos: Array.isArray(produtos) ? produtos : [],
       valor: Number(valor),
       status: "pendente",
     });
@@ -162,7 +190,7 @@ app.post("/api/criar-pix", async (req, res) => {
       qrCodeTexto,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    logErroSeguro(err);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao gerar PIX",
     });
@@ -220,16 +248,17 @@ app.post("/api/criar-cartao", async (req, res) => {
     });
 
     const pagamento = cobranca.data;
-    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-      ? "pago"
-      : "pendente";
+    const status =
+      pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+        ? "pago"
+        : "pendente";
 
     const pedido = {
       referenceId,
       nome,
       email,
       telefone,
-      produtos: produtos || [],
+      produtos: Array.isArray(produtos) ? produtos : [],
       valor: Number(valor),
       status,
     };
@@ -245,7 +274,7 @@ app.post("/api/criar-cartao", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    logErroSeguro(err);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar cartao",
     });
@@ -298,16 +327,17 @@ app.post("/api/criar-debito", async (req, res) => {
     });
 
     const pagamento = cobranca.data;
-    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-      ? "pago"
-      : "pendente";
+    const status =
+      pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+        ? "pago"
+        : "pendente";
 
     const pedido = {
       referenceId,
       nome,
       email,
       telefone,
-      produtos: produtos || [],
+      produtos: Array.isArray(produtos) ? produtos : [],
       valor: Number(valor),
       status,
     };
@@ -323,7 +353,7 @@ app.post("/api/criar-debito", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    logErroSeguro(err);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
     });
@@ -344,30 +374,4 @@ app.post("/api/webhook", async (req, res) => {
     const evento = body.event;
     const payment = body.payment || {};
     const paymentId = payment.id;
-    const status = payment.status;
-
-    if (paymentId) {
-      const pedido = pedidosPendentes.get(String(paymentId));
-      const statusPago = ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
-        ["CONFIRMED", "RECEIVED"].includes(status);
-
-      if (pedido && statusPago && pedido.status !== "pago") {
-        pedido.status = "pago";
-        pedidosPendentes.set(String(paymentId), pedido);
-        await enviarEmail(pedido);
-      }
-    }
-
-    res.status(200).send("ok");
-  } catch (err) {
-    console.error(err);
-    res.status(200).send("ok");
-  }
-});
-
-app.get("/", (req, res) => res.send("Backend Asaas rodando."));
-
-const port = PORT || 3000;
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Servidor rodando na porta ${port}`);
-});
+    const status =
