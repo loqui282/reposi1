@@ -30,41 +30,11 @@ const pedidosPendentes = new Map();
 
 const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
 
-function normalizeQty(qty) {
-  const n = Number(qty);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
-}
-
-function formatProductItem(p) {
-  if (!p) return null;
-
-  if (typeof p === "string") {
-    return p.trim() ? { name: p.trim(), quantity: 1 } : null;
-  }
-
-  const name = String(p.name || p.title || p.productName || "").trim();
-  if (!name) return null;
-
-  return {
-    name,
-    quantity: normalizeQty(p.quantity),
-  };
-}
-
-function buildProductsList(produtos) {
-  if (!Array.isArray(produtos)) return [];
-
-  return produtos
-    .map(formatProductItem)
-    .filter(Boolean);
-}
-
 async function enviarEmail(pedido) {
-  const listaProdutos = buildProductsList(pedido.produtos);
+  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
+  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
 
-  const produtosHtml = `<ul>${listaProdutos
-    .map((p) => `<li>${p.name} x${p.quantity}</li>`)
-    .join("")}</ul>`;
+  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
 
   await resend.emails.send({
     from: EMAIL_FROM,
@@ -181,7 +151,7 @@ app.post("/api/criar-pix", async (req, res) => {
       nome,
       email,
       telefone,
-      produtos: Array.isArray(produtos) ? produtos : [],
+      produtos: produtos || [],
       valor: Number(valor),
       status: "pendente",
     });
@@ -250,17 +220,16 @@ app.post("/api/criar-cartao", async (req, res) => {
     });
 
     const pagamento = cobranca.data;
-    const status =
-      pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-        ? "pago"
-        : "pendente";
+    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+      ? "pago"
+      : "pendente";
 
     const pedido = {
       referenceId,
       nome,
       email,
       telefone,
-      produtos: Array.isArray(produtos) ? produtos : [],
+      produtos: produtos || [],
       valor: Number(valor),
       status,
     };
@@ -329,17 +298,16 @@ app.post("/api/criar-debito", async (req, res) => {
     });
 
     const pagamento = cobranca.data;
-    const status =
-      pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-        ? "pago"
-        : "pendente";
+    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+      ? "pago"
+      : "pendente";
 
     const pedido = {
       referenceId,
       nome,
       email,
       telefone,
-      produtos: Array.isArray(produtos) ? produtos : [],
+      produtos: produtos || [],
       valor: Number(valor),
       status,
     };
@@ -380,8 +348,7 @@ app.post("/api/webhook", async (req, res) => {
 
     if (paymentId) {
       const pedido = pedidosPendentes.get(String(paymentId));
-      const statusPago =
-        ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
+      const statusPago = ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
         ["CONFIRMED", "RECEIVED"].includes(status);
 
       if (pedido && statusPago && pedido.status !== "pago") {
