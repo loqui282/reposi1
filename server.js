@@ -43,17 +43,12 @@ function formatProductItem(p) {
 
 function buildProductsList(produtos) {
   if (!Array.isArray(produtos)) return [];
-  return produtos
-    .map(formatProductItem)
-    .filter(Boolean);
+  return produtos.map(formatProductItem).filter(Boolean);
 }
 
 async function enviarEmail(pedido) {
   const listaProdutos = buildProductsList(pedido.produtos);
-
-  const produtosHtml = `<ul>${listaProdutos
-    .map((p) => `<li>${p}</li>`)
-    .join("")}</ul>`;
+  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
 
   await resend.emails.send({
     from: EMAIL_FROM,
@@ -135,7 +130,6 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   return response.data;
 }
 
-// ---------- PIX ----------
 app.post("/api/criar-pix", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cpfCnpj, produtos } = req.body;
@@ -164,10 +158,9 @@ app.post("/api/criar-pix", async (req, res) => {
 
     const paymentId = cobranca.data.id;
 
-    const qrResponse = await axios.get(
-      `${baseUrl}/payments/${paymentId}/pixQrCode`,
-      { headers: authHeaders(token) }
-    );
+    const qrResponse = await axios.get(`${baseUrl}/payments/${paymentId}/pixQrCode`, {
+      headers: authHeaders(token),
+    });
 
     const qrCodeImagem = qrResponse.data?.encodedImage
       ? `data:image/png;base64,${qrResponse.data.encodedImage}`
@@ -197,7 +190,6 @@ app.post("/api/criar-pix", async (req, res) => {
   }
 });
 
-// ---------- CARTAO DE CREDITO ----------
 app.post("/api/criar-cartao", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cardHash, installments, cpfCnpj, produtos } = req.body;
@@ -223,9 +215,7 @@ app.post("/api/criar-cartao", async (req, res) => {
       description: "Acesso ao produto",
       installmentCount: installments && installments > 1 ? installments : undefined,
       installmentValue:
-        installments && installments > 1
-          ? Number(valor) / 100 / installments
-          : undefined,
+        installments && installments > 1 ? Number(valor) / 100 / installments : undefined,
       creditCard: {
         holderName: card.holderName,
         number: card.number,
@@ -281,7 +271,6 @@ app.post("/api/criar-cartao", async (req, res) => {
   }
 });
 
-// ---------- DEBITO ----------
 app.post("/api/criar-debito", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cardHash, cpfCnpj, produtos } = req.body;
@@ -374,4 +363,31 @@ app.post("/api/webhook", async (req, res) => {
     const evento = body.event;
     const payment = body.payment || {};
     const paymentId = payment.id;
-    const status =
+    const status = payment.status;
+
+    if (paymentId) {
+      const pedido = pedidosPendentes.get(String(paymentId));
+      const statusPago =
+        ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
+        ["CONFIRMED", "RECEIVED"].includes(status);
+
+      if (pedido && statusPago && pedido.status !== "pago") {
+        pedido.status = "pago";
+        pedidosPendentes.set(String(paymentId), pedido);
+        await enviarEmail(pedido);
+      }
+    }
+
+    res.status(200).send("ok");
+  } catch (err) {
+    console.error(err);
+    res.status(200).send("ok");
+  }
+});
+
+app.get("/", (req, res) => res.send("Backend Asaas rodando."));
+
+const port = PORT || 3000;
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Servidor rodando na porta ${port}`);
+});
