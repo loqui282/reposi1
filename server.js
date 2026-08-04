@@ -11,8 +11,8 @@ app.use(cors());
 app.use(express.json());
 
 const {
-  ASAAS_ACCESS_TOKEN,
-  ASAAS_ENV,
+  ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
+  ASAAS_ENV, // "sandbox" ou "production"
   BASE_URL,
   RESEND_API_KEY,
   EMAIL_FROM,
@@ -28,6 +28,8 @@ const ASAAS_BASE_URL =
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
+const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
+
 function normalizeQty(qty) {
   const n = Number(qty);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
@@ -35,20 +37,34 @@ function normalizeQty(qty) {
 
 function formatProductItem(p) {
   if (!p) return null;
+
+  if (typeof p === "string") {
+    return p.trim() ? { name: p.trim(), quantity: 1 } : null;
+  }
+
   const name = String(p.name || p.title || p.productName || "").trim();
   if (!name) return null;
-  const quantity = normalizeQty(p.quantity);
-  return `${name} x${quantity}`;
+
+  return {
+    name,
+    quantity: normalizeQty(p.quantity),
+  };
 }
 
 function buildProductsList(produtos) {
   if (!Array.isArray(produtos)) return [];
-  return produtos.map(formatProductItem).filter(Boolean);
+
+  return produtos
+    .map(formatProductItem)
+    .filter(Boolean);
 }
 
 async function enviarEmail(pedido) {
   const listaProdutos = buildProductsList(pedido.produtos);
-  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+
+  const produtosHtml = `<ul>${listaProdutos
+    .map((p) => `<li>${p.name} x${p.quantity}</li>`)
+    .join("")}</ul>`;
 
   await resend.emails.send({
     from: EMAIL_FROM,
@@ -79,6 +95,7 @@ function authHeaders(token) {
   };
 }
 
+// Divide uma string "NUMERO|NOME|MM/AA|CVV" em campos separados
 function parseCardRaw(cardRaw) {
   const parts = String(cardRaw || "").split("|").map((p) => p.trim());
   const [numberRaw, holderName, expiry, ccv] = parts;
@@ -98,16 +115,6 @@ function parseCardRaw(cardRaw) {
     expiryYear,
     ccv: String(ccv || "").trim(),
   };
-}
-
-function logErroSeguro(err) {
-  const data = err.response?.data;
-  if (data) {
-    const { creditCard, creditCardHolderInfo, ...seguro } = data;
-    console.error("Erro Asaas:", JSON.stringify(seguro));
-  } else {
-    console.error(err.message);
-  }
 }
 
 async function criarCliente({ nome, email, telefone, cpfCnpj }) {
@@ -130,6 +137,7 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   return response.data;
 }
 
+// ---------- PIX ----------
 app.post("/api/criar-pix", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cpfCnpj, produtos } = req.body;
@@ -158,9 +166,10 @@ app.post("/api/criar-pix", async (req, res) => {
 
     const paymentId = cobranca.data.id;
 
-    const qrResponse = await axios.get(`${baseUrl}/payments/${paymentId}/pixQrCode`, {
-      headers: authHeaders(token),
-    });
+    const qrResponse = await axios.get(
+      `${baseUrl}/payments/${paymentId}/pixQrCode`,
+      { headers: authHeaders(token) }
+    );
 
     const qrCodeImagem = qrResponse.data?.encodedImage
       ? `data:image/png;base64,${qrResponse.data.encodedImage}`
@@ -183,13 +192,14 @@ app.post("/api/criar-pix", async (req, res) => {
       qrCodeTexto,
     });
   } catch (err) {
-    logErroSeguro(err);
+    console.error(err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao gerar PIX",
     });
   }
 });
 
+// ---------- CARTAO DE CREDITO ----------
 app.post("/api/criar-cartao", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cardHash, installments, cpfCnpj, produtos } = req.body;
@@ -215,7 +225,9 @@ app.post("/api/criar-cartao", async (req, res) => {
       description: "Acesso ao produto",
       installmentCount: installments && installments > 1 ? installments : undefined,
       installmentValue:
-        installments && installments > 1 ? Number(valor) / 100 / installments : undefined,
+        installments && installments > 1
+          ? Number(valor) / 100 / installments
+          : undefined,
       creditCard: {
         holderName: card.holderName,
         number: card.number,
@@ -264,13 +276,14 @@ app.post("/api/criar-cartao", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    logErroSeguro(err);
+    console.error(err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar cartao",
     });
   }
 });
 
+// ---------- DEBITO ----------
 app.post("/api/criar-debito", async (req, res) => {
   try {
     const { nome, email, telefone, valor, cardHash, cpfCnpj, produtos } = req.body;
@@ -342,7 +355,7 @@ app.post("/api/criar-debito", async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    logErroSeguro(err);
+    console.error(err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
     });
