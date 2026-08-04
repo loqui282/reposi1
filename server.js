@@ -2,23 +2,18 @@ import express from "express";
 import axios from "axios";
 import cors from "cors";
 import dotenv from "dotenv";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
 import { Resend } from "resend";
 
 dotenv.config();
 
 const app = express();
-
-app.use(helmet());
+app.use(cors());
 app.use(express.json());
 
 const {
-  ASAAS_ACCESS_TOKEN,
-  ASAAS_ENV,
-  ASAAS_WEBHOOK_TOKEN,
+  ASAAS_ACCESS_TOKEN, // <-- cole sua chave da Asaas aqui no .env quando tiver
+  ASAAS_ENV, // "sandbox" ou "production"
   BASE_URL,
-  FRONTEND_ORIGIN,
   RESEND_API_KEY,
   EMAIL_FROM,
   EMAIL_TO,
@@ -30,39 +25,30 @@ const ASAAS_BASE_URL =
     ? "https://api-sandbox.asaas.com/v3"
     : "https://api.asaas.com/v3";
 
-const allowedOrigins = FRONTEND_ORIGIN
-  ? FRONTEND_ORIGIN.split(",").map((o) => o.trim()).filter(Boolean)
-  : [];
-
-app.use(
-  cors({
-    origin: allowedOrigins.length ? allowedOrigins : false,
-    methods: ["GET", "POST"],
-  })
-);
-
 const resend = new Resend(RESEND_API_KEY);
 const pedidosPendentes = new Map();
 
 const PRODUTO_PRINCIPAL = "Netflix Resolução 4K HD + Tela Privada + 30 dias";
 
-// Ajuste aqui se mudar o id do produto no frontend
-const CATALOGO_PRECOS = {
-  netflix: 1280,
-};
+async function enviarEmail(pedido) {
+  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
+  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
 
-function calcularValorServidor(produtosIds) {
-  if (!Array.isArray(produtosIds) || produtosIds.length === 0) return 0;
-  return produtosIds.reduce((soma, id) => soma + (CATALOGO_PRECOS[id] || 0), 0);
+  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+
+  await resend.emails.send({
+    from: EMAIL_FROM,
+    to: EMAIL_TO,
+    subject: `Pagamento confirmado - Pedido ${pedido.referenceId}`,
+    html: `
+      <h2>Novo pagamento confirmado</h2>
+      <p><b>Nome:</b> ${pedido.nome}</p>
+      <p><b>Telefone:</b> ${pedido.telefone || "-"}</p>
+      <p><b>Produtos selecionados:</b></p>
+      ${produtosHtml}
+    `,
+  });
 }
-
-const pagamentoLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { erro: "Muitas tentativas. Aguarde alguns minutos e tente novamente." },
-});
 
 function cleanEnv() {
   return {
@@ -79,6 +65,7 @@ function authHeaders(token) {
   };
 }
 
+// Divide uma string "NUMERO|NOME|MM/AA|CVV" em campos separados
 function parseCardRaw(cardRaw) {
   const parts = String(cardRaw || "").split("|").map((p) => p.trim());
   const [numberRaw, holderName, expiry, ccv] = parts;
@@ -98,35 +85,6 @@ function parseCardRaw(cardRaw) {
     expiryYear,
     ccv: String(ccv || "").trim(),
   };
-}
-
-function logErroSeguro(err) {
-  const data = err.response?.data;
-  if (data) {
-    const { creditCard, creditCardHolderInfo, ...seguro } = data;
-    console.error("Erro Asaas:", JSON.stringify(seguro));
-  } else {
-    console.error(err.message);
-  }
-}
-
-async function enviarEmail(pedido) {
-  const extras = pedido.produtos && pedido.produtos.length > 0 ? pedido.produtos : [];
-  const listaProdutos = [PRODUTO_PRINCIPAL, ...extras];
-  const produtosHtml = `<ul>${listaProdutos.map((p) => `<li>${p}</li>`).join("")}</ul>`;
-
-  await resend.emails.send({
-    from: EMAIL_FROM,
-    to: EMAIL_TO,
-    subject: `Pagamento confirmado - Pedido ${pedido.referenceId}`,
-    html: `
-      <h2>Novo pagamento confirmado</h2>
-      <p><b>Nome:</b> ${pedido.nome}</p>
-      <p><b>Telefone:</b> ${pedido.telefone || "-"}</p>
-      <p><b>Produtos selecionados:</b></p>
-      ${produtosHtml}
-    `,
-  });
 }
 
 async function criarCliente({ nome, email, telefone, cpfCnpj }) {
@@ -149,14 +107,13 @@ async function criarCliente({ nome, email, telefone, cpfCnpj }) {
   return response.data;
 }
 
-app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
+// ---------- PIX ----------
+app.post("/api/criar-pix", async (req, res) => {
   try {
-    const { nome, email, telefone, cpfCnpj, produtosIds } = req.body;
+    const { nome, email, telefone, valor, cpfCnpj, produtos } = req.body;
 
-    const valorReal = calcularValorServidor(produtosIds);
-
-    if (!nome || !email || !cpfCnpj || !valorReal) {
-      return res.status(400).json({ erro: "nome, email, cpfCnpj e produtosIds validos sao obrigatorios" });
+    if (!nome || !email || !valor || !cpfCnpj) {
+      return res.status(400).json({ erro: "nome, email, valor e cpfCnpj sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
@@ -169,7 +126,7 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
       {
         customer: customer.id,
         billingType: "PIX",
-        value: valorReal / 100,
+        value: Number(valor) / 100,
         dueDate: new Date().toISOString().slice(0, 10),
         externalReference: referenceId,
         description: "Acesso ao produto",
@@ -179,9 +136,10 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
 
     const paymentId = cobranca.data.id;
 
-    const qrResponse = await axios.get(`${baseUrl}/payments/${paymentId}/pixQrCode`, {
-      headers: authHeaders(token),
-    });
+    const qrResponse = await axios.get(
+      `${baseUrl}/payments/${paymentId}/pixQrCode`,
+      { headers: authHeaders(token) }
+    );
 
     const qrCodeImagem = qrResponse.data?.encodedImage
       ? `data:image/png;base64,${qrResponse.data.encodedImage}`
@@ -193,8 +151,8 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
       nome,
       email,
       telefone,
-      produtos: req.body.produtos || [],
-      valor: valorReal,
+      produtos: produtos || [],
+      valor: Number(valor),
       status: "pendente",
     });
 
@@ -204,21 +162,20 @@ app.post("/api/criar-pix", pagamentoLimiter, async (req, res) => {
       qrCodeTexto,
     });
   } catch (err) {
-    logErroSeguro(err);
+    console.error(err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao gerar PIX",
     });
   }
 });
 
-app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
+// ---------- CARTAO DE CREDITO ----------
+app.post("/api/criar-cartao", async (req, res) => {
   try {
-    const { nome, email, telefone, cardHash, installments, cpfCnpj, produtosIds } = req.body;
+    const { nome, email, telefone, valor, cardHash, installments, cpfCnpj, produtos } = req.body;
 
-    const valorReal = calcularValorServidor(produtosIds);
-
-    if (!nome || !email || !cardHash || !cpfCnpj || !valorReal) {
-      return res.status(400).json({ erro: "nome, email, cardHash, cpfCnpj e produtosIds validos sao obrigatorios" });
+    if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
+      return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
@@ -232,12 +189,15 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
     const payload = {
       customer: customer.id,
       billingType: "CREDIT_CARD",
-      value: valorReal / 100,
+      value: Number(valor) / 100,
       dueDate: new Date().toISOString().slice(0, 10),
       externalReference: referenceId,
       description: "Acesso ao produto",
       installmentCount: installments && installments > 1 ? installments : undefined,
-      installmentValue: installments && installments > 1 ? valorReal / 100 / installments : undefined,
+      installmentValue:
+        installments && installments > 1
+          ? Number(valor) / 100 / installments
+          : undefined,
       creditCard: {
         holderName: card.holderName,
         number: card.number,
@@ -260,18 +220,17 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
     });
 
     const pagamento = cobranca.data;
-    const status =
-      pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
-        ? "pago"
-        : "pendente";
+    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+      ? "pago"
+      : "pendente";
 
     const pedido = {
       referenceId,
       nome,
       email,
       telefone,
-      produtos: req.body.produtos || [],
-      valor: valorReal,
+      produtos: produtos || [],
+      valor: Number(valor),
       status,
     };
 
@@ -286,21 +245,20 @@ app.post("/api/criar-cartao", pagamentoLimiter, async (req, res) => {
       status: pagamento.status,
     });
   } catch (err) {
-    logErroSeguro(err);
+    console.error(err.response?.data || err.message);
     res.status(500).json({
       erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar cartao",
     });
   }
 });
 
-app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
+// ---------- DEBITO ----------
+app.post("/api/criar-debito", async (req, res) => {
   try {
-    const { nome, email, telefone, cardHash, cpfCnpj, produtosIds } = req.body;
+    const { nome, email, telefone, valor, cardHash, cpfCnpj, produtos } = req.body;
 
-    const valorReal = calcularValorServidor(produtosIds);
-
-    if (!nome || !email || !cardHash || !cpfCnpj || !valorReal) {
-      return res.status(400).json({ erro: "nome, email, cardHash, cpfCnpj e produtosIds validos sao obrigatorios" });
+    if (!nome || !email || !valor || !cardHash || !cpfCnpj) {
+      return res.status(400).json({ erro: "nome, email, valor, cardHash e cpfCnpj sao obrigatorios" });
     }
 
     const referenceId = `pedido_${Date.now()}`;
@@ -314,7 +272,7 @@ app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
     const payload = {
       customer: customer.id,
       billingType: "DEBIT_CARD",
-      value: valorReal / 100,
+      value: Number(valor) / 100,
       dueDate: new Date().toISOString().slice(0, 10),
       externalReference: referenceId,
       description: "Acesso ao produto",
@@ -330,4 +288,86 @@ app.post("/api/criar-debito", pagamentoLimiter, async (req, res) => {
         email: String(email).trim(),
         cpfCnpj: docDigits,
         phone: phoneDigits,
-        postalCode: req.body.postalCode ||
+        postalCode: req.body.postalCode || "01310-000",
+        addressNumber: req.body.addressNumber || "0",
+      },
+    };
+
+    const cobranca = await axios.post(`${baseUrl}/payments`, payload, {
+      headers: authHeaders(token),
+    });
+
+    const pagamento = cobranca.data;
+    const status = pagamento?.status === "CONFIRMED" || pagamento?.status === "RECEIVED"
+      ? "pago"
+      : "pendente";
+
+    const pedido = {
+      referenceId,
+      nome,
+      email,
+      telefone,
+      produtos: produtos || [],
+      valor: Number(valor),
+      status,
+    };
+
+    pedidosPendentes.set(String(pagamento.id), pedido);
+
+    if (status === "pago") {
+      await enviarEmail(pedido);
+    }
+
+    res.json({
+      orderId: pagamento.id,
+      status: pagamento.status,
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({
+      erro: err.response?.data?.errors?.[0]?.description || "Erro ao processar debito",
+    });
+  }
+});
+
+app.get("/api/status/:orderId", (req, res) => {
+  const pedido = pedidosPendentes.get(String(req.params.orderId));
+  if (!pedido) return res.status(404).json({ status: "nao_encontrado" });
+  res.json({ status: pedido.status });
+});
+
+app.post("/api/webhook", async (req, res) => {
+  try {
+    console.log("WEBHOOK ASAAS:", JSON.stringify(req.body));
+
+    const body = req.body || {};
+    const evento = body.event;
+    const payment = body.payment || {};
+    const paymentId = payment.id;
+    const status = payment.status;
+
+    if (paymentId) {
+      const pedido = pedidosPendentes.get(String(paymentId));
+      const statusPago = ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"].includes(evento) ||
+        ["CONFIRMED", "RECEIVED"].includes(status);
+
+      if (pedido && statusPago && pedido.status !== "pago") {
+        pedido.status = "pago";
+        pedidosPendentes.set(String(paymentId), pedido);
+        await enviarEmail(pedido);
+      }
+    }
+
+    res.status(200).send("ok");
+  } catch (err) {
+    console.error(err);
+    res.status(200).send("ok");
+  }
+});
+
+app.get("/", (req, res) => res.send("Backend Asaas rodando."));
+
+const port = PORT || 3000;
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Servidor rodando na porta ${port}`);
+});
